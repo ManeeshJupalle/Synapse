@@ -3,7 +3,8 @@
   "name": "Synapse — Your Second Brain",
   "version": "0.1.0",
   "description": "A privacy-first knowledge graph built passively from your browsing. 100% local.",
-  "permissions": ["storage", "tabs", "activeTab", "scripting", "notifications"],
+  "homepage_url": "https://github.com/ManeeshJupalle/Synapse",
+  "permissions": ["storage", "tabs", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "src/background/index.ts",

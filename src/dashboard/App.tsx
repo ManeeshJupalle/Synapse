@@ -10,6 +10,7 @@ import SettingsPanel from './components/SettingsPanel';
 import ModelBanner from './components/ModelBanner';
 import { useModelStatus } from './hooks/useModelStatus';
 import type { ModelStatus } from './hooks/useModelStatus';
+import Onboarding from './components/Onboarding';
 
 type View = 'graph' | 'timeline' | 'clusters' | 'settings';
 
@@ -21,6 +22,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [pendingJobs, setPendingJobs] = useState(0);
+  const [onboarded, setOnboarded] = useState(() => localStorage.getItem('synapse_onboarded') === 'true');
   const modelStatus: ModelStatus = useModelStatus();
 
   async function refresh() {
@@ -63,33 +65,37 @@ export default function App() {
 
   return (
     <div className="min-h-screen noise">
-      <div className="max-w-[1400px] mx-auto px-6 py-8">
-        <Header view={view} onView={setView} pendingJobs={pendingJobs} />
+      {!onboarded && pages.length === 0 && !loading ? (
+        <Onboarding onDone={() => { localStorage.setItem('synapse_onboarded', 'true'); setOnboarded(true); }} />
+      ) : (
+        <div className="max-w-[1400px] mx-auto px-6 py-8">
+          <Header view={view} onView={setView} pendingJobs={pendingJobs} />
 
-        <ModelBanner status={modelStatus} />
+          <ModelBanner status={modelStatus} />
 
-        <StatsBar stats={stats} />
+          <StatsBar stats={stats} />
 
-        {loading ? (
-          <LoadingState />
-        ) : pages.length === 0 ? (
-          <EmptyState />
-        ) : (
-          <div className="mt-6">
-            <SearchPanel />
-            <div className="mt-8">
-              {view === 'graph' && (
-                <KnowledgeGraph pages={pages} clusters={clusters} connections={connections} />
-              )}
-              {view === 'timeline' && <Timeline pages={pages} clusters={clusters} />}
-              {view === 'clusters' && <ClusterPanel clusters={clusters} pages={pages} />}
-              {view === 'settings' && settings && (
-                <SettingsPanel settings={settings} onChanged={refresh} />
-              )}
+          {loading ? (
+            <LoadingState />
+          ) : pages.length === 0 ? (
+            <EmptyState />
+          ) : (
+            <div className="mt-6">
+              <SearchPanel />
+              <div className="mt-8">
+                {view === 'graph' && (
+                  <KnowledgeGraph pages={pages} clusters={clusters} connections={connections} />
+                )}
+                {view === 'timeline' && <Timeline pages={pages} clusters={clusters} />}
+                {view === 'clusters' && <ClusterPanel clusters={clusters} pages={pages} />}
+                {view === 'settings' && settings && (
+                  <SettingsPanel settings={settings} onChanged={refresh} />
+                )}
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
