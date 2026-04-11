@@ -75,13 +75,25 @@ export const DEFAULT_SETTINGS: Settings = {
     'calendar.google.com',
     'drive.google.com',
     'docs.google.com',
-    'github.com/settings',
     'accounts.google.com',
-    'chrome://',
     'localhost',
   ],
   darkMode: true,
 };
+
+/** Lightweight page info returned by search — no full content or embedding. */
+export interface SearchResult {
+  id: number;
+  url: string;
+  title: string;
+  domain: string;
+  excerpt: string;
+  capturedAt: number;
+  wordCount: number;
+  keywords: string[];
+  favicon?: string;
+  score: number;
+}
 
 export type BgMessage =
   | {
@@ -97,6 +109,7 @@ export type BgMessage =
       };
     }
   | { type: 'GET_RESURFACE'; payload: { url: string; content: string } }
+  | { type: 'SEARCH'; payload: { query: string; mode: 'semantic' | 'keyword' } }
   | { type: 'GET_STATUS' }
   | { type: 'REINDEX' }
   | { type: 'EXPORT_DATA' }

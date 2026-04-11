@@ -16,9 +16,32 @@ export default defineConfig({
     target: 'esnext',
     minify: 'esbuild',
     sourcemap: false,
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         chunkFileNames: 'assets/[name]-[hash].js',
+        manualChunks(id) {
+          // Heavy ML stack — only background worker imports this
+          if (
+            id.includes('@xenova/transformers') ||
+            id.includes('onnxruntime-web') ||
+            id.includes('onnxruntime-common')
+          ) {
+            return 'ml-engine';
+          }
+          // Force graph + D3
+          if (id.includes('react-force-graph') || id.includes('d3') || id.includes('three')) {
+            return 'graph-viz';
+          }
+          // React core
+          if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) {
+            return 'react-vendor';
+          }
+          // Dexie
+          if (id.includes('dexie')) {
+            return 'dexie';
+          }
+        },
       },
     },
   },

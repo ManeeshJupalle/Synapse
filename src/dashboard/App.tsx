@@ -7,6 +7,9 @@ import KnowledgeGraph from './components/KnowledgeGraph';
 import Timeline from './components/Timeline';
 import ClusterPanel from './components/ClusterPanel';
 import SettingsPanel from './components/SettingsPanel';
+import ModelBanner from './components/ModelBanner';
+import { useModelStatus } from './hooks/useModelStatus';
+import type { ModelStatus } from './hooks/useModelStatus';
 
 type View = 'graph' | 'timeline' | 'clusters' | 'settings';
 
@@ -17,6 +20,8 @@ export default function App() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pendingJobs, setPendingJobs] = useState(0);
+  const modelStatus: ModelStatus = useModelStatus();
 
   async function refresh() {
     const [p, c, conns, s] = await Promise.all([
@@ -30,12 +35,19 @@ export default function App() {
     setConnections(conns);
     setSettings(s);
     setLoading(false);
+
+    // Check pending jobs in background worker
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'GET_STATUS' });
+      if (res?.ok) setPendingJobs(res.data?.pendingJobs ?? 0);
+    } catch {
+      /* SW might be cold */
+    }
   }
 
   useEffect(() => {
     void refresh();
-    const handler = () => void refresh();
-    const interval = window.setInterval(handler, 8000);
+    const interval = window.setInterval(() => void refresh(), 8000);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -52,7 +64,10 @@ export default function App() {
   return (
     <div className="min-h-screen noise">
       <div className="max-w-[1400px] mx-auto px-6 py-8">
-        <Header view={view} onView={setView} />
+        <Header view={view} onView={setView} pendingJobs={pendingJobs} />
+
+        <ModelBanner status={modelStatus} />
+
         <StatsBar stats={stats} />
 
         {loading ? (
@@ -61,7 +76,7 @@ export default function App() {
           <EmptyState />
         ) : (
           <div className="mt-6">
-            <SearchPanel pages={pages} />
+            <SearchPanel />
             <div className="mt-8">
               {view === 'graph' && (
                 <KnowledgeGraph pages={pages} clusters={clusters} connections={connections} />
@@ -79,7 +94,15 @@ export default function App() {
   );
 }
 
-function Header({ view, onView }: { view: View; onView: (v: View) => void }) {
+function Header({
+  view,
+  onView,
+  pendingJobs,
+}: {
+  view: View;
+  onView: (v: View) => void;
+  pendingJobs: number;
+}) {
   const tabs: { id: View; label: string }[] = [
     { id: 'graph', label: 'Graph' },
     { id: 'timeline', label: 'Timeline' },
@@ -87,7 +110,7 @@ function Header({ view, onView }: { view: View; onView: (v: View) => void }) {
     { id: 'settings', label: 'Settings' },
   ];
   return (
-    <header className="flex items-center justify-between mb-8 animate-fade-in">
+    <header className="flex items-center justify-between mb-6 animate-fade-in">
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-synapse-accent to-synapse-accent2 glow flex items-center justify-center text-xl">
           🧠
@@ -97,21 +120,30 @@ function Header({ view, onView }: { view: View; onView: (v: View) => void }) {
           <p className="text-xs text-synapse-muted">Your second brain · 100% local</p>
         </div>
       </div>
-      <nav className="flex items-center gap-1 p-1 bg-synapse-surface border border-synapse-border rounded-xl">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => onView(t.id)}
-            className={`px-4 py-1.5 text-sm font-medium rounded-lg transition-colors ${
-              view === t.id
-                ? 'bg-synapse-accent text-white'
-                : 'text-synapse-muted hover:text-synapse-text'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
+
+      <div className="flex items-center gap-4">
+        {pendingJobs > 0 && (
+          <div className="flex items-center gap-2 text-xs text-synapse-muted animate-pulse-soft">
+            <span className="w-2 h-2 rounded-full bg-synapse-accent2 animate-pulse" />
+            Embedding {pendingJobs} page{pendingJobs !== 1 ? 's' : ''}…
+          </div>
+        )}
+        <nav className="flex items-center gap-1 p-1 bg-synapse-surface border border-synapse-border rounded-xl">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => onView(t.id)}
+              className={`px-4 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                view === t.id
+                  ? 'bg-synapse-accent text-white'
+                  : 'text-synapse-muted hover:text-synapse-text'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </div>
     </header>
   );
 }
@@ -130,14 +162,18 @@ function EmptyState() {
       <div className="text-6xl mb-4">🌱</div>
       <h2 className="text-2xl font-semibold mb-2">Your brain is empty — for now.</h2>
       <p className="text-synapse-muted max-w-md mx-auto mb-6">
-        Synapse captures articles after you spend ~15 seconds reading them. Visit a few pages and
-        come back here.
+        Synapse captures articles after you spend ~15 seconds reading them. Visit a few long-form
+        pages and come back here.
       </p>
-      <div className="inline-flex gap-2 text-xs text-synapse-muted">
+      <div className="flex flex-wrap justify-center gap-2 text-xs text-synapse-muted">
         <span className="chip">No API calls</span>
         <span className="chip">No telemetry</span>
         <span className="chip">All on-device</span>
+        <span className="chip">~15s dwell threshold</span>
       </div>
+      <p className="text-xs text-synapse-muted mt-8">
+        Blocked domains won't be captured. Check Settings to customise.
+      </p>
     </div>
   );
 }
