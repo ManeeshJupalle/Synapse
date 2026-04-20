@@ -12,27 +12,35 @@ export default function SearchPanel() {
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  async function runSearch(q: string) {
-    if (!q.trim()) { setResults([]); setError(null); return; }
+  async function runSearch(nextQuery: string) {
+    if (!nextQuery.trim()) {
+      setResults([]);
+      setError(null);
+      return;
+    }
+
     setBusy(true);
     setError(null);
-    try {
-      const res = await chrome.runtime.sendMessage({
-        type: 'SEARCH',
-        payload: { query: q.trim(), mode },
-      }) as { ok: boolean; data?: SearchResult[]; error?: string } | undefined;
 
-      if (!res) {
+    try {
+      const response = (await chrome.runtime.sendMessage({
+        type: 'SEARCH',
+        payload: { query: nextQuery.trim(), mode },
+      })) as { ok: boolean; data?: SearchResult[]; error?: string } | undefined;
+
+      if (!response) {
         setError('No response from background worker. Try reloading the extension.');
-      } else if (!res.ok) {
-        setError(res.error ?? 'Search failed.');
+      } else if (!response.ok) {
+        setError(response.error ?? 'Search failed.');
       } else {
-        setResults(res.data ?? []);
-        if ((res.data ?? []).length === 0) setError('No results found.');
+        setResults(response.data ?? []);
+        if ((response.data ?? []).length === 0) {
+          setError('No results found.');
+        }
       }
-    } catch (e) {
+    } catch (error) {
       setError('Background worker unavailable. Reload the extension and try again.');
-      console.error('[synapse] search error', e);
+      console.error('[synapse] search error', error);
     } finally {
       setBusy(false);
     }
@@ -40,40 +48,50 @@ export default function SearchPanel() {
 
   const placeholder =
     mode === 'semantic'
-      ? 'Search by meaning — e.g. "transformer attention mechanisms"'
-      : 'Exact keyword search…';
+      ? 'Search by meaning - e.g. "transformer attention mechanisms"'
+      : 'Exact keyword search...';
 
   return (
     <div className="card p-5 animate-slide-up">
       <form
-        onSubmit={(e) => { e.preventDefault(); void runSearch(query); }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void runSearch(query);
+        }}
       >
         <div className="flex gap-3">
           <div className="flex-1 relative">
             <input
               ref={inputRef}
-              className="input pl-10"
+              className="input pl-12"
               placeholder={placeholder}
               value={query}
-              onChange={(e) => { setQuery(e.target.value); if (!e.target.value) { setResults([]); setError(null); } }}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                if (!event.target.value) {
+                  setResults([]);
+                  setError(null);
+                }
+              }}
             />
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-synapse-muted select-none">
-              🔍
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold tracking-wide text-synapse-muted select-none">
+              SEARCH
             </span>
           </div>
 
-          {/* Mode toggle */}
           <div className="flex items-center gap-0.5 p-1 bg-synapse-elevated border border-synapse-border rounded-lg">
-            {(['semantic', 'keyword'] as Mode[]).map((m) => (
+            {(['semantic', 'keyword'] as Mode[]).map((nextMode) => (
               <button
                 type="button"
-                key={m}
-                onClick={() => setMode(m)}
+                key={nextMode}
+                onClick={() => setMode(nextMode)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  mode === m ? 'bg-synapse-accent text-white' : 'text-synapse-muted hover:text-synapse-text'
+                  mode === nextMode
+                    ? 'bg-synapse-accent text-white'
+                    : 'text-synapse-muted hover:text-synapse-text'
                 }`}
               >
-                {m}
+                {nextMode}
               </button>
             ))}
           </div>
@@ -84,16 +102,12 @@ export default function SearchPanel() {
         </div>
       </form>
 
-      {/* Error / empty state */}
-      {error && (
-        <p className="mt-3 text-sm text-synapse-muted">{error}</p>
-      )}
+      {error && <p className="mt-3 text-sm text-synapse-muted">{error}</p>}
 
-      {/* Results */}
       {results.length > 0 && (
         <div className="mt-5 space-y-2 max-h-[400px] overflow-y-auto pr-1">
-          {results.map((r) => (
-            <ResultCard key={r.id} result={r} query={query} mode={mode} />
+          {results.map((result) => (
+            <ResultCard key={result.id} result={result} query={query} mode={mode} />
           ))}
         </div>
       )}
@@ -101,7 +115,15 @@ export default function SearchPanel() {
   );
 }
 
-function ResultCard({ result, query, mode }: { result: SearchResult; query: string; mode: Mode }) {
+function ResultCard({
+  result,
+  query,
+  mode,
+}: {
+  result: SearchResult;
+  query: string;
+  mode: Mode;
+}) {
   return (
     <a
       href={result.url}
@@ -117,7 +139,8 @@ function ResultCard({ result, query, mode }: { result: SearchResult; query: stri
           {mode === 'keyword' ? highlight(result.title, query) : result.title}
         </div>
         <div className="text-xs text-synapse-muted mt-0.5">
-          {result.domain} · {formatRelative(result.capturedAt)} · {result.wordCount.toLocaleString()} words
+          {result.domain} - {formatRelative(result.capturedAt)} -{' '}
+          {result.wordCount.toLocaleString()} words
         </div>
         <div className="text-sm text-synapse-muted mt-2 leading-relaxed">
           {mode === 'keyword'
@@ -126,8 +149,10 @@ function ResultCard({ result, query, mode }: { result: SearchResult; query: stri
         </div>
         {result.keywords.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-2">
-            {result.keywords.slice(0, 5).map((k) => (
-              <span key={k} className="chip">{k}</span>
+            {result.keywords.slice(0, 5).map((keyword) => (
+              <span key={keyword} className="chip">
+                {keyword}
+              </span>
             ))}
           </div>
         )}
@@ -143,15 +168,17 @@ function ResultCard({ result, query, mode }: { result: SearchResult; query: stri
 
 function highlight(text: string, query: string): React.ReactNode {
   if (!query) return text;
-  const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return text;
+
+  const index = text.toLowerCase().indexOf(query.toLowerCase());
+  if (index === -1) return text;
+
   return (
     <>
-      {text.slice(0, idx)}
+      {text.slice(0, index)}
       <mark className="bg-synapse-accent/30 text-white rounded px-0.5">
-        {text.slice(idx, idx + query.length)}
+        {text.slice(index, index + query.length)}
       </mark>
-      {text.slice(idx + query.length)}
+      {text.slice(index + query.length)}
     </>
   );
 }

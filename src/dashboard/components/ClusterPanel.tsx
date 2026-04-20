@@ -8,9 +8,9 @@ interface Props {
 }
 
 export default function ClusterPanel({ clusters, pages }: Props) {
-  const pageMap = useMemo(() => new Map(pages.map((p) => [p.id as number, p])), [pages]);
+  const pageMap = useMemo(() => new Map(pages.map((page) => [page.id as number, page])), [pages]);
   const sorted = useMemo(
-    () => [...clusters].sort((a, b) => b.pageIds.length - a.pageIds.length),
+    () => [...clusters].sort((left, right) => right.pageIds.length - left.pageIds.length),
     [clusters]
   );
 
@@ -24,42 +24,50 @@ export default function ClusterPanel({ clusters, pages }: Props) {
 
   return (
     <div className="grid gap-4 md:grid-cols-2 animate-slide-up">
-      {sorted.map((c) => {
-        const clusterPages = c.pageIds.map((id) => pageMap.get(id)).filter(Boolean) as CapturedPage[];
+      {sorted.map((cluster) => {
+        const clusterPages = cluster.pageIds
+          .map((pageId) => pageMap.get(pageId))
+          .filter(Boolean) as CapturedPage[];
+
         return (
-          <div key={c.id} className="card p-5 card-hover">
+          <div key={cluster.id} className="card p-5 card-hover">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div
                   className="w-3 h-3 rounded-full"
-                  style={{ background: c.color, boxShadow: `0 0 20px ${c.color}` }}
+                  style={{ background: cluster.color, boxShadow: `0 0 20px ${cluster.color}` }}
                 />
-                <h3 className="font-semibold text-lg">{c.label}</h3>
+                <h3 className="font-semibold text-lg">{cluster.label}</h3>
               </div>
-              <span className="chip">{c.pageIds.length} pages</span>
+              <span className="chip">{cluster.pageIds.length} pages</span>
             </div>
+
             <div className="flex flex-wrap gap-1 mt-3">
-              {c.keywords.map((k) => (
-                <span key={k} className="chip">
-                  {k}
+              {cluster.keywords.map((keyword) => (
+                <span key={keyword} className="chip">
+                  {keyword}
                 </span>
               ))}
             </div>
+
             <ul className="mt-4 space-y-1 max-h-48 overflow-y-auto">
-              {clusterPages.slice(0, 10).map((p) => (
-                <li key={p.id}>
+              {clusterPages.slice(0, 10).map((page) => (
+                <li key={page.id}>
                   <a
-                    href={p.url}
+                    href={page.url}
                     target="_blank"
                     rel="noreferrer"
                     className="block text-sm text-synapse-muted hover:text-synapse-accent truncate"
-                    title={p.title}
+                    title={page.title}
                   >
-                    · {truncate(p.title, 64)}
-                    <span className="text-synapse-border ml-2">{formatRelative(p.capturedAt)}</span>
+                    - {truncate(page.title, 64)}
+                    <span className="text-synapse-border ml-2">
+                      {formatRelative(page.capturedAt)}
+                    </span>
                   </a>
                 </li>
               ))}
+
               {clusterPages.length > 10 && (
                 <li className="text-xs text-synapse-muted">+ {clusterPages.length - 10} more</li>
               )}

@@ -60,6 +60,8 @@ export interface Settings {
   darkMode: boolean;
 }
 
+export const SETTINGS_STORAGE_KEY = 'synapse_settings';
+
 export const DEFAULT_SETTINGS: Settings = {
   id: 1,
   dwellThresholdMs: 15_000,
@@ -76,12 +78,24 @@ export const DEFAULT_SETTINGS: Settings = {
     'drive.google.com',
     'docs.google.com',
     'accounts.google.com',
+    'mail.yahoo.com',
+    'outlook.live.com',
+    'outlook.office.com',
+    'app.slack.com',
+    'slack.com',
+    'discord.com',
+    'teams.microsoft.com',
+    'web.whatsapp.com',
+    'web.telegram.org',
+    'www.notion.so',
+    'notion.so',
+    'figma.com',
     'localhost',
   ],
   darkMode: true,
 };
 
-/** Lightweight page info returned by search — no full content or embedding. */
+/** Lightweight page info returned by search - no full content or embedding. */
 export interface SearchResult {
   id: number;
   url: string;
@@ -116,6 +130,4 @@ export type BgMessage =
   | { type: 'IMPORT_DATA'; payload: string }
   | { type: 'DELETE_ALL' };
 
-export type BgResponse =
-  | { ok: true; data?: unknown }
-  | { ok: false; error: string };
+export type BgResponse = { ok: true; data?: unknown } | { ok: false; error: string };

@@ -8,19 +8,28 @@ interface Props {
 }
 
 export default function Timeline({ pages, clusters }: Props) {
-  const clusterMap = useMemo(() => new Map(clusters.map((c) => [c.id as number, c])), [clusters]);
+  const clusterMap = useMemo(
+    () => new Map(clusters.map((cluster) => [cluster.id as number, cluster])),
+    [clusters]
+  );
 
   const grouped = useMemo(() => {
     const byDay = new Map<string, CapturedPage[]>();
-    for (const p of pages) {
-      const key = new Date(p.capturedAt).toDateString();
-      const arr = byDay.get(key) ?? [];
-      arr.push(p);
-      byDay.set(key, arr);
+
+    for (const page of pages) {
+      const key = new Date(page.capturedAt).toDateString();
+      const existing = byDay.get(key) ?? [];
+      existing.push(page);
+      byDay.set(key, existing);
     }
+
     return [...byDay.entries()]
-      .map(([k, v]) => ({ key: k, ts: new Date(k).getTime(), pages: v }))
-      .sort((a, b) => b.ts - a.ts);
+      .map(([key, groupedPages]) => ({
+        key,
+        ts: new Date(key).getTime(),
+        pages: groupedPages,
+      }))
+      .sort((left, right) => right.ts - left.ts);
   }, [pages]);
 
   return (
@@ -31,16 +40,18 @@ export default function Timeline({ pages, clusters }: Props) {
           <section key={day.key}>
             <div className="sticky top-0 bg-synapse-surface/95 backdrop-blur py-2 z-10">
               <h3 className="text-sm font-semibold text-synapse-muted uppercase tracking-wider">
-                {formatDay(day.ts)} · {day.pages.length}
+                {formatDay(day.ts)} - {day.pages.length}
               </h3>
             </div>
+
             <ul className="mt-3 space-y-2">
-              {day.pages.map((p) => {
-                const cluster = p.clusterId != null ? clusterMap.get(p.clusterId) : null;
+              {day.pages.map((page) => {
+                const cluster = page.clusterId != null ? clusterMap.get(page.clusterId) : null;
+
                 return (
-                  <li key={p.id}>
+                  <li key={page.id}>
                     <a
-                      href={p.url}
+                      href={page.url}
                       target="_blank"
                       rel="noreferrer"
                       className="flex items-start gap-3 p-3 rounded-lg border border-synapse-border hover:border-synapse-accent/60 hover:bg-synapse-elevated transition-colors"
@@ -51,13 +62,17 @@ export default function Timeline({ pages, clusters }: Props) {
                       />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          {p.favicon && <img src={p.favicon} alt="" className="w-4 h-4 rounded-sm" />}
-                          <div className="font-medium truncate">{p.title}</div>
+                          {page.favicon && (
+                            <img src={page.favicon} alt="" className="w-4 h-4 rounded-sm" />
+                          )}
+                          <div className="font-medium truncate">{page.title}</div>
                         </div>
                         <div className="text-xs text-synapse-muted mt-1">
-                          {p.domain} · {formatRelative(p.capturedAt)} · {p.wordCount} words
+                          {page.domain} - {formatRelative(page.capturedAt)} - {page.wordCount} words
                         </div>
-                        <div className="text-sm text-synapse-muted mt-2">{truncate(p.excerpt, 180)}</div>
+                        <div className="text-sm text-synapse-muted mt-2">
+                          {truncate(page.excerpt, 180)}
+                        </div>
                       </div>
                       {cluster && (
                         <span

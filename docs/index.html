@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Synapse — Privacy Policy</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧠</text></svg>" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after {
       box-sizing: border-box;
@@ -279,7 +276,7 @@
     <div class="section">
       <h2>The AI model</h2>
       <p>Synapse uses <span class="mono">all-MiniLM-L6-v2</span> to generate semantic embeddings that power its search and recall features. The model runs <span class="highlight">entirely inside your browser</span> via ONNX WebAssembly — no GPU servers, no cloud inference, no text ever leaves your machine.</p>
-      <p>The model file is downloaded once from a CDN and then cached locally. After that first download, Synapse operates with <span class="highlight">zero network activity</span>.</p>
+      <p>The model files and ONNX runtime binaries ship directly with the extension package. Synapse operates with <span class="highlight">zero extension-initiated network activity</span> at runtime.</p>
     </div>
 
     <!-- Section 5: Your controls -->

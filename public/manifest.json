@@ -1,18 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "Synapse — Your Second Brain",
+  "name": "Synapse - Your Second Brain",
   "version": "0.1.0",
   "description": "A privacy-first knowledge graph built passively from your browsing. 100% local.",
   "homepage_url": "https://github.com/ManeeshJupalle/Synapse",
-  "permissions": ["storage", "tabs", "activeTab"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": ["storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "src/background/index.ts",
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["src/content/index.ts"],
       "run_at": "document_idle"
     }
@@ -31,8 +31,8 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["assets/*", "models/*"],
-      "matches": ["<all_urls>"]
+      "resources": ["assets/*", "models/*", "wasm/*"],
+      "matches": ["http://*/*", "https://*/*"]
     }
   ],
   "content_security_policy": {

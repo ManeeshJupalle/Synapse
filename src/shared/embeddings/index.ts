@@ -1,7 +1,17 @@
 import { pipeline, env, type FeatureExtractionPipeline } from '@xenova/transformers';
 
-env.allowLocalModels = false;
+function extensionAssetPath(path: string): string {
+  if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
+    return chrome.runtime.getURL(path);
+  }
+  return `/${path}`;
+}
+
+env.allowLocalModels = true;
+env.allowRemoteModels = false;
+env.localModelPath = extensionAssetPath('models/');
 env.useBrowserCache = true;
+env.backends.onnx.wasm.wasmPaths = extensionAssetPath('wasm/');
 env.backends.onnx.wasm.numThreads = 1;
 
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
@@ -24,6 +34,7 @@ function notifyProgress(info: Parameters<ProgressCallback>[0]) {
 export function getExtractor(): Promise<FeatureExtractionPipeline> {
   if (!extractorPromise) {
     extractorPromise = pipeline('feature-extraction', MODEL_ID, {
+      local_files_only: true,
       quantized: true,
       progress_callback: (info: { status: string; progress?: number; file?: string }) => {
         notifyProgress(info);
@@ -57,9 +68,5 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 export async function warmup(): Promise<void> {
-  try {
-    await embed('warmup');
-  } catch (e) {
-    console.warn('[synapse] warmup failed', e);
-  }
+  await embed('warmup');
 }

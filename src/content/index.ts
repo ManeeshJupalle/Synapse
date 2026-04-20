@@ -1,18 +1,54 @@
 import { Readability } from '@mozilla/readability';
-import type { BgMessage } from '@shared/types';
+import {
+  DEFAULT_SETTINGS,
+  SETTINGS_STORAGE_KEY,
+  type BgMessage,
+  type Settings,
+} from '@shared/types';
 import { hashUrl } from '@shared/utils/hash';
 
-const DEFAULT_DWELL_MS = 15_000;
-const MIN_WORDS = 150;
+type RuntimeSettings = Pick<
+  Settings,
+  'captureEnabled' | 'resurfaceEnabled' | 'dwellThresholdMs' | 'minWordCount' | 'blockedDomains'
+>;
 
-let dwellStart = Date.now();
+const DEFAULT_RUNTIME_SETTINGS: RuntimeSettings = {
+  captureEnabled: DEFAULT_SETTINGS.captureEnabled,
+  resurfaceEnabled: DEFAULT_SETTINGS.resurfaceEnabled,
+  dwellThresholdMs: DEFAULT_SETTINGS.dwellThresholdMs,
+  minWordCount: DEFAULT_SETTINGS.minWordCount,
+  blockedDomains: DEFAULT_SETTINGS.blockedDomains,
+};
+
 let captured = false;
 let isVisible = !document.hidden;
 let visibleMs = 0;
 let lastVisibilityChange = Date.now();
 let currentUrlHash = hashUrl(location.href);
+let runtimeSettings: RuntimeSettings = { ...DEFAULT_RUNTIME_SETTINGS };
 
-// ─── Dwell tracking ──────────────────────────────────────────────────────────
+async function loadRuntimeSettings(): Promise<void> {
+  try {
+    const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
+    runtimeSettings = {
+      ...DEFAULT_RUNTIME_SETTINGS,
+      ...(stored[SETTINGS_STORAGE_KEY] as Partial<RuntimeSettings> | undefined),
+    };
+  } catch {
+    runtimeSettings = { ...DEFAULT_RUNTIME_SETTINGS };
+  }
+}
+
+function watchRuntimeSettings() {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+
+    const next = changes[SETTINGS_STORAGE_KEY]?.newValue as Partial<RuntimeSettings> | undefined;
+    if (!next) return;
+
+    runtimeSettings = { ...DEFAULT_RUNTIME_SETTINGS, ...next };
+  });
+}
 
 function accumulateVisible() {
   const now = Date.now();
@@ -20,7 +56,6 @@ function accumulateVisible() {
   lastVisibilityChange = now;
 }
 
-// SPA navigation: if the URL changes, reset state for the new page
 function setupNavigationObserver() {
   let lastHref = location.href;
   const observer = new MutationObserver(() => {
@@ -35,45 +70,89 @@ function setupNavigationObserver() {
 function onNavigate() {
   const newHash = hashUrl(location.href);
   if (newHash === currentUrlHash) return;
+
   accumulateVisible();
   currentUrlHash = newHash;
   captured = false;
   isVisible = !document.hidden;
   visibleMs = 0;
   lastVisibilityChange = Date.now();
-  dwellStart = Date.now();
 }
 
-// ─── Filtering ───────────────────────────────────────────────────────────────
-
 const BLOCKED_PATH_FRAGMENTS = [
-  '/login', '/signin', '/signup', '/auth/', '/oauth',
-  '/checkout', '/cart', '/payment', '/settings', '/account',
-  '/admin', '/dashboard', '/api/', '/graphql',
+  '/login',
+  '/signin',
+  '/signup',
+  '/auth/',
+  '/oauth',
+  '/checkout',
+  '/cart',
+  '/payment',
+  '/settings',
+  '/account',
+  '/admin',
+  '/dashboard',
+  '/api/',
+  '/graphql',
+  '/compose',
+  '/inbox',
+  '/messages',
+  '/chat',
+  '/workspace',
+  '/editor',
 ];
+
+function hasSensitiveInputs(): boolean {
+  return (
+    document.querySelector('input[type="password"], input[autocomplete="current-password"]') !=
+    null
+  );
+}
+
+function hasEditableSurface(): boolean {
+  if (document.body?.isContentEditable) return true;
+
+  return (
+    document.querySelector(
+      '[contenteditable=""], [contenteditable="true"], textarea, input[type="text"], input[type="email"], input[type="search"]'
+    ) != null
+  );
+}
 
 function shouldSkip(): boolean {
   const { protocol, hostname, pathname } = location;
+  if (!runtimeSettings.captureEnabled) return true;
   if (!protocol.startsWith('http')) return true;
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local')) return true;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return true; // bare IP
-  if (BLOCKED_PATH_FRAGMENTS.some((p) => pathname.includes(p))) return true;
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local')) {
+    return true;
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return true;
+  if (isDomainBlocked(location.href, runtimeSettings.blockedDomains)) return true;
+  if (BLOCKED_PATH_FRAGMENTS.some((fragment) => pathname.includes(fragment))) return true;
+  if (hasSensitiveInputs()) return true;
+  if (hasEditableSurface() && pathname.split('/').filter(Boolean).length <= 2) return true;
   if (document.contentType && !document.contentType.includes('html')) return true;
   return false;
 }
 
-// ─── Extraction ───────────────────────────────────────────────────────────────
-
 function extract(): { title: string; content: string; excerpt: string; wordCount: number } | null {
   try {
-    // Readability needs a Document with a body
     if (!document.body || document.body.innerText.trim().length < 200) return null;
 
     const clone = document.cloneNode(true) as Document;
 
-    // Strip noise elements before parsing
-    for (const sel of ['script', 'style', 'noscript', 'svg', 'iframe', 'nav', 'footer', 'aside', '[aria-hidden="true"]']) {
-      clone.querySelectorAll(sel).forEach((el) => el.remove());
+    for (const selector of [
+      'script',
+      'style',
+      'noscript',
+      'svg',
+      'iframe',
+      'nav',
+      'footer',
+      'aside',
+      '[aria-hidden="true"]',
+    ]) {
+      clone.querySelectorAll(selector).forEach((element) => element.remove());
     }
 
     const parsed = new Readability(clone).parse();
@@ -81,7 +160,7 @@ function extract(): { title: string; content: string; excerpt: string; wordCount
 
     const text = (parsed.textContent ?? '').replace(/\s+/g, ' ').trim();
     const wordCount = text.split(/\s+/).filter(Boolean).length;
-    if (wordCount < MIN_WORDS) return null;
+    if (wordCount < runtimeSettings.minWordCount) return null;
 
     return {
       title: (parsed.title || document.title).trim(),
@@ -89,8 +168,8 @@ function extract(): { title: string; content: string; excerpt: string; wordCount
       excerpt: (parsed.excerpt || text.slice(0, 280)).trim(),
       wordCount,
     };
-  } catch (e) {
-    console.debug('[synapse] extract failed', e);
+  } catch (error) {
+    console.debug('[synapse] extract failed', error);
     return null;
   }
 }
@@ -103,10 +182,12 @@ function getFavicon(): string | undefined {
     'link[rel="icon"]',
     'link[rel="shortcut icon"]',
   ];
-  for (const sel of candidates) {
-    const el = document.querySelector<HTMLLinkElement>(sel);
-    if (el?.href) return el.href;
+
+  for (const selector of candidates) {
+    const element = document.querySelector<HTMLLinkElement>(selector);
+    if (element?.href) return element.href;
   }
+
   try {
     return new URL('/favicon.ico', location.origin).toString();
   } catch {
@@ -114,12 +195,11 @@ function getFavicon(): string | undefined {
   }
 }
 
-// ─── Capture ─────────────────────────────────────────────────────────────────
-
 async function tryCapture() {
   if (captured || shouldSkip()) return;
+
   accumulateVisible();
-  if (visibleMs < DEFAULT_DWELL_MS) return;
+  if (visibleMs < runtimeSettings.dwellThresholdMs) return;
 
   const extracted = extract();
   if (!extracted) return;
@@ -141,49 +221,54 @@ async function tryCapture() {
 
   try {
     await sendWithRetry(message);
-  } catch (e) {
-    console.debug('[synapse] capture send failed', e);
-    // Not fatal — job will be picked up if SW restarts
+  } catch (error) {
+    console.debug('[synapse] capture send failed', error);
   }
 
-  void askResurface(extracted.content);
+  if (
+    runtimeSettings.resurfaceEnabled &&
+    !isDomainBlocked(location.href, runtimeSettings.blockedDomains)
+  ) {
+    void askResurface(extracted.content);
+  }
 }
 
-/** Retry once — the service worker may be sleeping and need a wake-up ping. */
 async function sendWithRetry(msg: BgMessage, retries = 1): Promise<unknown> {
   try {
     return await chrome.runtime.sendMessage(msg);
-  } catch (e) {
+  } catch (error) {
     if (retries > 0) {
       await sleep(300);
       return sendWithRetry(msg, retries - 1);
     }
-    throw e;
+    throw error;
   }
 }
 
 function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-// ─── Resurface toast ─────────────────────────────────────────────────────────
 
 async function askResurface(content: string) {
   try {
-    const res = await sendWithRetry({
+    const response = (await sendWithRetry({
       type: 'GET_RESURFACE',
       payload: { url: location.href, content },
-    } satisfies BgMessage) as { ok: boolean; data?: { title: string; url: string; similarity: number }[] } | undefined;
-    if (res?.ok && Array.isArray(res.data) && res.data.length > 0) {
-      showResurfaceToast(res.data);
+    } satisfies BgMessage)) as
+      | { ok: boolean; data?: { title: string; url: string; similarity: number }[] }
+      | undefined;
+
+    if (response?.ok && Array.isArray(response.data) && response.data.length > 0) {
+      showResurfaceToast(response.data);
     }
   } catch {
-    /* ignore */
+    // Ignore resurface failures. They should never block capture.
   }
 }
 
 function showResurfaceToast(items: { title: string; url: string; similarity: number }[]) {
   if (document.getElementById('synapse-resurface-toast')) return;
+
   const host = document.createElement('div');
   host.id = 'synapse-resurface-toast';
   const shadow = host.attachShadow({ mode: 'open' });
@@ -205,48 +290,67 @@ function showResurfaceToast(items: { title: string; url: string; similarity: num
         box-shadow: 0 24px 64px rgba(0,0,0,.5);
         animation: slide .35s cubic-bezier(.16,1,.3,1);
       }
-      @keyframes slide { from { opacity:0; transform: translateY(12px) scale(.97) } to { opacity:1; transform: none } }
-      .head { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
-      .dot { width:8px; height:8px; border-radius:50%; background: linear-gradient(135deg,#7c5cff,#2dd4bf); flex-shrink:0; }
-      .label { font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:#8a8a9a; }
-      .close { margin-left:auto; background:none; border:none; color:#8a8a9a; cursor:pointer; font-size:14px; padding:0 2px; line-height:1; }
-      .close:hover { color:#e8e8f0; }
-      .item { display:flex; align-items:baseline; gap:6px; padding:7px 0; border-top:1px solid #1e1e28; text-decoration:none; }
-      .item-title { font-size:13px; color:#e8e8f0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .item-title:hover { color:#7c5cff; }
-      .sim { font-size:10px; color:#8a8a9a; flex-shrink:0; }
+      @keyframes slide { from { opacity: 0; transform: translateY(12px) scale(.97) } to { opacity: 1; transform: none } }
+      .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: linear-gradient(135deg,#7c5cff,#2dd4bf); flex-shrink: 0; }
+      .label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #8a8a9a; }
+      .close { margin-left: auto; background: none; border: none; color: #8a8a9a; cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1; }
+      .close:hover { color: #e8e8f0; }
+      .item { display: flex; align-items: baseline; gap: 6px; padding: 7px 0; border-top: 1px solid #1e1e28; text-decoration: none; }
+      .item-title { font-size: 13px; color: #e8e8f0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .item-title:hover { color: #7c5cff; }
+      .sim { font-size: 10px; color: #8a8a9a; flex-shrink: 0; }
     </style>
     <div class="wrap">
       <div class="head">
         <div class="dot"></div>
-        <div class="label">Synapse · Related</div>
-        <button class="close" aria-label="Dismiss">✕</button>
+        <div class="label">Synapse - Related</div>
+        <button class="close" aria-label="Dismiss">x</button>
       </div>
       ${items
         .slice(0, 3)
         .map(
-          (i) => `
-        <a class="item" target="_blank" rel="noreferrer" href="${escHtml(i.url)}">
-          <span class="item-title">${escHtml(i.title)}</span>
-          <span class="sim">${Math.round(i.similarity * 100)}%</span>
+          (item) => `
+        <a class="item" target="_blank" rel="noreferrer" href="${escHtml(item.url)}">
+          <span class="item-title">${escHtml(item.title)}</span>
+          <span class="sim">${Math.round(item.similarity * 100)}%</span>
         </a>`
         )
         .join('')}
     </div>
   `;
+
   document.documentElement.appendChild(host);
   shadow.querySelector('.close')?.addEventListener('click', () => host.remove());
   setTimeout(() => host.remove(), 18_000);
 }
 
-function escHtml(s: string): string {
-  return s.replace(
+function escHtml(value: string): string {
+  return value.replace(
     /[&<>"']/g,
-    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string)
+    (char) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] as string
   );
 }
 
-// ─── Event wiring ────────────────────────────────────────────────────────────
+function isDomainBlocked(url: string, blockedDomains: string[]): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return false;
+  }
+
+  return blockedDomains.some((blocked) => {
+    const normalized = blocked
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .split('/')[0];
+    return hostname === normalized || hostname.endsWith('.' + normalized);
+  });
+}
 
 document.addEventListener('visibilitychange', () => {
   accumulateVisible();
@@ -266,6 +370,8 @@ if (document.readyState !== 'loading') {
   document.addEventListener('DOMContentLoaded', setupNavigationObserver);
 }
 
-dwellStart = Date.now();
-setTimeout(() => void tryCapture(), DEFAULT_DWELL_MS + 500);
-setInterval(() => void tryCapture(), 20_000);
+watchRuntimeSettings();
+void loadRuntimeSettings().then(() => {
+  setTimeout(() => void tryCapture(), runtimeSettings.dwellThresholdMs + 500);
+});
+setInterval(() => void tryCapture(), 5_000);

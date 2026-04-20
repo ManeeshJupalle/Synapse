@@ -1,30 +1,20 @@
 import {
   db,
-  upsertPage,
-  getSettings,
   deleteAll,
   exportAll,
+  getSettings,
   importAll,
+  syncSettingsToStorage,
+  upsertPage,
 } from '@shared/db';
-import { embed, warmup, cosineSimilarity } from '@shared/embeddings';
-import { agglomerative, clusterColor, clusterLabel } from '@shared/utils/cluster';
-import { extractKeywords } from '@shared/utils/keywords';
+import { cosineSimilarity, embed, warmup } from '@shared/embeddings';
+import { clusterColor, clusterLabel, clusterPages } from '@shared/utils/cluster';
 import { hashUrl, domainOf } from '@shared/utils/hash';
+import { extractKeywords } from '@shared/utils/keywords';
 import type { BgMessage, BgResponse, CapturedPage, SearchResult } from '@shared/types';
 
 console.log('[synapse] background worker booting');
 
-// ─── Model readiness ─────────────────────────────────────────────────────────
-// Tracked per SW session. Resets to false when SW wakes from cold start.
-let modelReady = false;
-
-async function ensureModel(): Promise<void> {
-  if (modelReady) return;
-  await warmup();
-  modelReady = true;
-}
-
-// ─── Persistent job queue ────────────────────────────────────────────────────
 interface PendingJob {
   urlHash: string;
   url: string;
@@ -38,50 +28,116 @@ interface PendingJob {
 }
 
 const JOB_KEY = 'synapse_pending_jobs';
+let modelReady = false;
+let modelError: string | null = null;
+let modelInitPromise: Promise<void> | null = null;
 let processingQueue = false;
+let queueVersion = 0;
+let reclusterTimer: ReturnType<typeof setTimeout> | undefined;
+
+function formatError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error ?? 'Unknown error');
+}
+
+async function ensureModel(): Promise<void> {
+  if (modelReady) return;
+  if (modelInitPromise) return modelInitPromise;
+
+  modelInitPromise = (async () => {
+    try {
+      modelError = null;
+      await warmup();
+      modelReady = true;
+    } catch (error) {
+      modelReady = false;
+      modelError = formatError(error);
+      throw error;
+    } finally {
+      modelInitPromise = null;
+    }
+  })();
+
+  return modelInitPromise;
+}
+
+function setModelReadyState(): void {
+  modelReady = true;
+  modelError = null;
+}
+
+function setModelErrorState(error: unknown): void {
+  modelReady = false;
+  modelError = formatError(error);
+}
+
+function warmModelInBackground(context: string): void {
+  void ensureModel().catch((error) => {
+    console.warn(`[synapse] ${context} failed`, error);
+  });
+}
+
+function syncSettingsMirror(): void {
+  void getSettings().then((settings) => syncSettingsToStorage(settings));
+}
 
 async function enqueueJob(job: PendingJob): Promise<void> {
   const { [JOB_KEY]: existing = [] } = await chrome.storage.session.get(JOB_KEY);
-  const jobs = existing as PendingJob[];
-  const deduped = jobs.filter((j) => j.urlHash !== job.urlHash);
+  const deduped = (existing as PendingJob[]).filter((item) => item.urlHash !== job.urlHash);
   deduped.push(job);
   await chrome.storage.session.set({ [JOB_KEY]: deduped });
 }
 
-async function drainQueue(): Promise<void> {
+async function clearPendingJobs(): Promise<void> {
+  await chrome.storage.session.remove(JOB_KEY);
+}
+
+async function resetCapturedData(): Promise<void> {
+  queueVersion += 1;
+  await clearPendingJobs();
+  await deleteAll();
+}
+
+async function drainQueue(runVersion = queueVersion): Promise<void> {
   if (processingQueue) return;
   processingQueue = true;
+
   try {
-    while (true) {
+    while (runVersion === queueVersion) {
       const { [JOB_KEY]: jobs = [] } = await chrome.storage.session.get(JOB_KEY);
       const queue = jobs as PendingJob[];
       if (queue.length === 0) break;
+
       const job = queue[0];
-      const success = await processJob(job);
-      if (success) {
-        const { [JOB_KEY]: current = [] } = await chrome.storage.session.get(JOB_KEY);
-        const remaining = (current as PendingJob[]).filter((j) => j.urlHash !== job.urlHash);
-        await chrome.storage.session.set({ [JOB_KEY]: remaining });
-      } else {
-        break;
-      }
+      const success = await processJob(job, runVersion);
+      if (runVersion !== queueVersion) break;
+
+      if (!success) break;
+
+      const { [JOB_KEY]: current = [] } = await chrome.storage.session.get(JOB_KEY);
+      const remaining = (current as PendingJob[]).filter((item) => item.urlHash !== job.urlHash);
+      await chrome.storage.session.set({ [JOB_KEY]: remaining });
     }
   } finally {
     processingQueue = false;
   }
 }
 
-async function processJob(job: PendingJob): Promise<boolean> {
+async function processJob(job: PendingJob, runVersion: number): Promise<boolean> {
   try {
     const existing = await db.pages.where('urlHash').equals(job.urlHash).first();
 
     let embedding: number[] = existing?.embedding ?? [];
     if (!existing) {
+      await ensureModel();
       embedding = await embed(`${job.title}\n\n${job.content}`);
-      modelReady = true;
+      setModelReadyState();
     }
 
-    const keywords = extractKeywords(job.content);
+    if (runVersion !== queueVersion) {
+      return false;
+    }
+
     const page: CapturedPage = {
       urlHash: job.urlHash,
       url: job.url,
@@ -95,7 +151,7 @@ async function processJob(job: PendingJob): Promise<boolean> {
       visitCount: 1,
       dwellMs: job.dwellMs,
       embedding,
-      keywords,
+      keywords: extractKeywords(job.content),
       clusterId: existing?.clusterId ?? null,
       favicon: job.favicon,
     };
@@ -106,39 +162,38 @@ async function processJob(job: PendingJob): Promise<boolean> {
       void rebuildConnectionsForPage(pageId, settings.connectionThreshold);
       scheduleRecluster();
     }
+
     return true;
-  } catch (e) {
-    console.error('[synapse] processJob failed', e);
+  } catch (error) {
+    setModelErrorState(error);
+    console.error('[synapse] processJob failed', error);
     return false;
   }
 }
 
-// ─── Lifecycle ───────────────────────────────────────────────────────────────
-
 chrome.runtime.onInstalled.addListener(async () => {
-  await getSettings();
+  syncSettingsMirror();
   console.log('[synapse] installed, settings initialized');
-  void ensureModel().then(() => {
-    console.log('[synapse] model warmed up');
-    void drainQueue();
-  });
+  warmModelInBackground('model warmup');
+  void drainQueue();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void ensureModel().then(() => void drainQueue());
+  syncSettingsMirror();
+  warmModelInBackground('startup model warmup');
+  void drainQueue();
 });
 
-// Wake the model as soon as the SW starts (handles cases beyond onInstalled/onStartup)
-void ensureModel().then(() => void drainQueue());
-
-// ─── Message router ──────────────────────────────────────────────────────────
+syncSettingsMirror();
+warmModelInBackground('service worker model warmup');
+void drainQueue();
 
 chrome.runtime.onMessage.addListener((msg: BgMessage, _sender, sendResponse) => {
   handleMessage(msg)
     .then((res) => sendResponse(res))
-    .catch((err) => {
-      console.error('[synapse] handler error', err);
-      sendResponse({ ok: false, error: String(err?.message ?? err) } satisfies BgResponse);
+    .catch((error) => {
+      console.error('[synapse] handler error', error);
+      sendResponse({ ok: false, error: formatError(error) } satisfies BgResponse);
     });
   return true;
 });
@@ -161,17 +216,15 @@ async function handleMessage(msg: BgMessage): Promise<BgResponse> {
       await importAll(msg.payload);
       return { ok: true };
     case 'DELETE_ALL':
-      await deleteAll();
+      await resetCapturedData();
       return { ok: true };
     default: {
-      const _exhaustive: never = msg;
-      void _exhaustive;
+      const exhaustive: never = msg;
+      void exhaustive;
       return { ok: false, error: 'unknown message' };
     }
   }
 }
-
-// ─── Handlers ────────────────────────────────────────────────────────────────
 
 async function handleCapture(
   payload: Extract<BgMessage, { type: 'PAGE_CAPTURED' }>['payload']
@@ -181,9 +234,8 @@ async function handleCapture(
   if (payload.wordCount < settings.minWordCount) return { ok: true };
   if (isDomainBlocked(payload.url, settings.blockedDomains)) return { ok: true };
 
-  const urlHash = hashUrl(payload.url);
   await enqueueJob({
-    urlHash,
+    urlHash: hashUrl(payload.url),
     url: payload.url,
     title: payload.title,
     content: payload.content,
@@ -193,6 +245,7 @@ async function handleCapture(
     favicon: payload.favicon,
     addedAt: Date.now(),
   });
+
   void drainQueue();
   return { ok: true };
 }
@@ -203,52 +256,55 @@ async function handleSearch(
   const pages = await db.pages.toArray();
   if (pages.length === 0) return { ok: true, data: [] };
 
-  const toResult = (p: CapturedPage, score: number): SearchResult => ({
-    id: p.id as number,
-    url: p.url,
-    title: p.title,
-    domain: p.domain,
-    excerpt: p.excerpt,
-    capturedAt: p.capturedAt,
-    wordCount: p.wordCount,
-    keywords: p.keywords,
-    favicon: p.favicon,
+  const toResult = (page: CapturedPage, score: number): SearchResult => ({
+    id: page.id as number,
+    url: page.url,
+    title: page.title,
+    domain: page.domain,
+    excerpt: page.excerpt,
+    capturedAt: page.capturedAt,
+    wordCount: page.wordCount,
+    keywords: page.keywords,
+    favicon: page.favicon,
     score,
   });
 
   if (payload.mode === 'keyword') {
     const needle = payload.query.toLowerCase();
-    const results: SearchResult[] = pages
-      .map((p) => {
-        const hay = `${p.title} ${p.excerpt} ${p.content}`.toLowerCase();
-        const idx = hay.indexOf(needle);
-        return { p, score: idx === -1 ? 0 : 1 - idx / hay.length };
+    const results = pages
+      .map((page) => {
+        const haystack = `${page.title} ${page.excerpt} ${page.content}`.toLowerCase();
+        const index = haystack.indexOf(needle);
+        return { page, score: index === -1 ? 0 : 1 - index / haystack.length };
       })
-      .filter((x) => x.score > 0)
+      .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 20)
-      .map((x) => toResult(x.p, x.score));
+      .map((entry) => toResult(entry.page, entry.score));
+
     return { ok: true, data: results };
   }
 
-  // Semantic search
-  let queryVec: number[];
   try {
     await ensureModel();
-    queryVec = await embed(payload.query);
-    modelReady = true;
-  } catch (e) {
-    return { ok: false, error: 'Embedding model not ready yet — try again in a moment.' };
+    const queryVec = await embed(payload.query);
+    setModelReadyState();
+
+    const results = pages
+      .filter((page) => page.embedding?.length)
+      .map((page) => ({ page, score: cosineSimilarity(queryVec, page.embedding) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 20)
+      .map((entry) => toResult(entry.page, entry.score));
+
+    return { ok: true, data: results };
+  } catch (error) {
+    setModelErrorState(error);
+    return {
+      ok: false,
+      error: modelError ?? 'Embedding model not ready yet. Try again in a moment.',
+    };
   }
-
-  const results: SearchResult[] = pages
-    .filter((p) => p.embedding?.length)
-    .map((p) => ({ p, score: cosineSimilarity(queryVec, p.embedding) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 20)
-    .map((x) => toResult(x.p, x.score));
-
-  return { ok: true, data: results };
 }
 
 async function handleResurface(
@@ -258,33 +314,36 @@ async function handleResurface(
   if (!settings.resurfaceEnabled) return { ok: true, data: [] };
 
   const currentHash = hashUrl(payload.url);
-  const all = await db.pages.toArray();
-  if (all.length < 3) return { ok: true, data: [] };
+  const allPages = await db.pages.toArray();
+  if (allPages.length < 3) return { ok: true, data: [] };
 
   let queryVec: number[];
   try {
+    await ensureModel();
     queryVec = await embed(payload.content.slice(0, 1500));
-  } catch {
+    setModelReadyState();
+  } catch (error) {
+    setModelErrorState(error);
     return { ok: true, data: [] };
   }
 
   const cooldown = Date.now() - settings.resurfaceCooldownMs;
   const recent = await db.resurfaces.where('shownAt').above(cooldown).toArray();
-  const recentIds = new Set(recent.map((r) => r.pageId));
+  const recentIds = new Set(recent.map((entry) => entry.pageId));
 
-  const scored = all
-    .filter((p) => p.urlHash !== currentHash && !recentIds.has(p.id as number))
-    .filter((p) => p.embedding?.length)
-    .map((p) => ({ page: p, sim: cosineSimilarity(queryVec, p.embedding) }))
-    .filter((x) => x.sim >= settings.similarityThreshold)
-    .sort((a, b) => b.sim - a.sim)
+  const scored = allPages
+    .filter((page) => page.urlHash !== currentHash && !recentIds.has(page.id as number))
+    .filter((page) => page.embedding?.length)
+    .map((page) => ({ page, similarity: cosineSimilarity(queryVec, page.embedding) }))
+    .filter((entry) => entry.similarity >= settings.similarityThreshold)
+    .sort((a, b) => b.similarity - a.similarity)
     .slice(0, 3);
 
-  for (const s of scored) {
+  for (const entry of scored) {
     await db.resurfaces.add({
-      pageId: s.page.id as number,
+      pageId: entry.page.id as number,
       triggeredByUrl: payload.url,
-      similarity: s.sim,
+      similarity: entry.similarity,
       shownAt: Date.now(),
       dismissed: false,
       clicked: false,
@@ -293,7 +352,11 @@ async function handleResurface(
 
   return {
     ok: true,
-    data: scored.map((s) => ({ title: s.page.title, url: s.page.url, similarity: s.sim })),
+    data: scored.map((entry) => ({
+      title: entry.page.title,
+      url: entry.page.url,
+      similarity: entry.similarity,
+    })),
   };
 }
 
@@ -304,6 +367,7 @@ async function handleStatus(): Promise<BgResponse> {
     db.clusters.count(),
     db.connections.count(),
   ]);
+
   return {
     ok: true,
     data: {
@@ -312,78 +376,79 @@ async function handleStatus(): Promise<BgResponse> {
       connections,
       pendingJobs: (jobs as PendingJob[]).length,
       modelReady,
+      modelLoading: modelInitPromise !== null,
+      modelError,
     },
   };
 }
 
-// ─── Graph maintenance ───────────────────────────────────────────────────────
-
-async function rebuildConnectionsForPage(pageId: number, threshold: number) {
+async function rebuildConnectionsForPage(pageId: number, threshold: number): Promise<void> {
   const target = await db.pages.get(pageId);
   if (!target || !target.embedding?.length) return;
 
-  const all = await db.pages.toArray();
+  const allPages = await db.pages.toArray();
   const links: { sourceId: number; targetId: number; similarity: number }[] = [];
-  for (const other of all) {
-    if (other.id == null || other.id === pageId || !other.embedding?.length) continue;
-    const sim = cosineSimilarity(target.embedding, other.embedding);
-    if (sim >= threshold) {
+
+  for (const page of allPages) {
+    if (page.id == null || page.id === pageId || !page.embedding?.length) continue;
+
+    const similarity = cosineSimilarity(target.embedding, page.embedding);
+    if (similarity >= threshold) {
       links.push({
-        sourceId: Math.min(pageId, other.id),
-        targetId: Math.max(pageId, other.id),
-        similarity: sim,
+        sourceId: Math.min(pageId, page.id),
+        targetId: Math.max(pageId, page.id),
+        similarity,
       });
     }
   }
 
   await db.transaction('rw', db.connections, async () => {
     await db.connections.where('sourceId').equals(pageId).or('targetId').equals(pageId).delete();
-    for (const l of links) {
-      const exists = await db.connections
+
+    for (const link of links) {
+      const existing = await db.connections
         .where('[sourceId+targetId]')
-        .equals([l.sourceId, l.targetId])
+        .equals([link.sourceId, link.targetId])
         .first();
-      if (!exists) await db.connections.add({ ...l, createdAt: Date.now() });
+
+      if (!existing) {
+        await db.connections.add({ ...link, createdAt: Date.now() });
+      }
     }
   });
 }
 
-let reclusterTimer: ReturnType<typeof setTimeout> | undefined;
-function scheduleRecluster() {
+function scheduleRecluster(): void {
   if (reclusterTimer !== undefined) clearTimeout(reclusterTimer);
   reclusterTimer = setTimeout(() => void recluster(), 5000);
 }
 
-const MAX_CLUSTER_PAGES = 200;
-
-async function recluster() {
+async function recluster(): Promise<void> {
   const settings = await getSettings();
-  let pages = await db.pages.toArray();
+  const pages = await db.pages.toArray();
   if (pages.length < 3) return;
 
-  // Performance cap: agglomerative is O(n³) — cap at most-recent 200 pages
-  if (pages.length > MAX_CLUSTER_PAGES) {
-    pages = pages.sort((a, b) => b.capturedAt - a.capturedAt).slice(0, MAX_CLUSTER_PAGES);
-    console.log(`[synapse] clustering capped at ${MAX_CLUSTER_PAGES} pages`);
-  }
-
-  const results = agglomerative(pages, settings.clusterThreshold);
+  const results = clusterPages(pages, settings.clusterThreshold);
 
   await db.transaction('rw', [db.clusters, db.pages], async () => {
     await db.clusters.clear();
     await db.pages.toCollection().modify({ clusterId: null });
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      const id = (await db.clusters.add({
-        label: clusterLabel(r.keywords),
-        keywords: r.keywords,
-        centroid: r.centroid,
-        pageIds: r.pageIds,
+
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index];
+      const clusterId = (await db.clusters.add({
+        label: clusterLabel(result.keywords),
+        keywords: result.keywords,
+        centroid: result.centroid,
+        pageIds: result.pageIds,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        color: clusterColor(i),
+        color: clusterColor(index),
       })) as number;
-      for (const pid of r.pageIds) await db.pages.update(pid, { clusterId: id });
+
+      for (const pageId of result.pageIds) {
+        await db.pages.update(pageId, { clusterId });
+      }
     }
   });
 
@@ -392,31 +457,35 @@ async function recluster() {
 
 async function handleReindex(): Promise<BgResponse> {
   const pages = await db.pages.toArray();
-  for (const p of pages) {
+
+  for (const page of pages) {
     try {
-      const vec = await embed(`${p.title}\n\n${p.content}`);
-      await db.pages.update(p.id as number, { embedding: vec });
-      modelReady = true;
-    } catch (e) {
-      console.warn('[synapse] reindex page failed', p.id, e);
+      await ensureModel();
+      const embedding = await embed(`${page.title}\n\n${page.content}`);
+      await db.pages.update(page.id as number, { embedding });
+      setModelReadyState();
+    } catch (error) {
+      setModelErrorState(error);
+      console.warn('[synapse] reindex page failed', page.id, error);
     }
   }
+
   await recluster();
   return { ok: true };
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
 function isDomainBlocked(url: string, blockedDomains: string[]): boolean {
   let hostname: string;
+
   try {
     hostname = new URL(url).hostname.replace(/^www\./, '');
   } catch {
     return false;
   }
+
   return blockedDomains.some((blocked) => {
-    const b = blocked.replace(/^www\./, '').toLowerCase();
-    const h = hostname.toLowerCase();
-    return h === b || h.endsWith('.' + b);
+    const normalizedBlocked = blocked.replace(/^www\./, '').toLowerCase();
+    const normalizedHost = hostname.toLowerCase();
+    return normalizedHost === normalizedBlocked || normalizedHost.endsWith('.' + normalizedBlocked);
   });
 }

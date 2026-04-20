@@ -6,10 +6,12 @@
   "description": "A privacy-first Chrome extension that passively builds a searchable knowledge graph from your browsing.",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/generate-icons.mjs && tsc --noEmit && vite build",
+    "build": "node scripts/sync-local-ml-assets.mjs && node scripts/generate-icons.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "icons": "node scripts/generate-icons.mjs"
+    "icons": "node scripts/generate-icons.mjs",
+    "ml-assets": "node scripts/sync-local-ml-assets.mjs"
   },
   "dependencies": {
     "@mozilla/readability": "^0.5.0",
@@ -26,10 +28,12 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
+    "fake-indexeddb": "^6.2.3",
     "postcss": "^8.4.39",
     "sharp": "^0.34.5",
     "tailwindcss": "^3.4.6",
     "typescript": "^5.5.3",
-    "vite": "^5.3.4"
+    "vite": "^5.3.4",
+    "vitest": "^4.1.4"
   }
 }

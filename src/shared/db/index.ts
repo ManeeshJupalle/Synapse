@@ -6,6 +6,7 @@ import {
   type ResurfaceEvent,
   type Settings,
   DEFAULT_SETTINGS,
+  SETTINGS_STORAGE_KEY,
 } from '@shared/types';
 
 class SynapseDB extends Dexie {
@@ -29,10 +30,20 @@ class SynapseDB extends Dexie {
 
 export const db = new SynapseDB();
 
+export async function syncSettingsToStorage(settings: Settings): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+  try {
+    await chrome.storage.local.set({ [SETTINGS_STORAGE_KEY]: settings });
+  } catch {
+    // Ignore storage mirror failures outside extension runtime contexts.
+  }
+}
+
 export async function getSettings(): Promise<Settings> {
   const s = await db.settings.get(1);
   if (!s) {
     await db.settings.put(DEFAULT_SETTINGS);
+    await syncSettingsToStorage(DEFAULT_SETTINGS);
     return DEFAULT_SETTINGS;
   }
   return { ...DEFAULT_SETTINGS, ...s };
@@ -42,6 +53,7 @@ export async function updateSettings(patch: Partial<Settings>): Promise<Settings
   const current = await getSettings();
   const next: Settings = { ...current, ...patch, id: 1 };
   await db.settings.put(next);
+  await syncSettingsToStorage(next);
   return next;
 }
 
@@ -115,4 +127,5 @@ export async function importAll(json: string): Promise<void> {
       if (Array.isArray(data.settings)) await db.settings.bulkPut(data.settings);
     }
   );
+  await syncSettingsToStorage(await getSettings());
 }

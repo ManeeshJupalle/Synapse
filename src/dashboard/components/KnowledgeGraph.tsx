@@ -35,95 +35,93 @@ export default function KnowledgeGraph({ pages, clusters, connections }: Props) 
   const [hoveredId, setHoveredId] = useState<number | null>(null);
   const [currentZoom, setCurrentZoom] = useState(1);
 
-  // Track container width
   useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setSize({ width: e.contentRect.width, height: 560 });
+    const element = wrapRef.current;
+    if (!element) return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setSize({ width: entry.contentRect.width, height: 560 });
+      }
     });
-    ro.observe(el);
-    return () => ro.disconnect();
+
+    observer.observe(element);
+    return () => observer.disconnect();
   }, []);
 
   const data = useMemo(() => {
-    // Build color map from cluster id → color
-    const colorMap = new Map<number, string>(
-      clusters.map((c) => [c.id as number, c.color])
-    );
+    const colorMap = new Map<number, string>(clusters.map((cluster) => [cluster.id as number, cluster.color]));
 
     const nodes: GNode[] = pages
-      .filter((p) => p.id != null)
-      .map((p) => {
-        const clr =
-          p.clusterId != null && p.clusterId !== undefined
-            ? colorMap.get(p.clusterId as number)
-            : undefined;
+      .filter((page) => page.id != null)
+      .map((page) => {
+        const clusterColor = page.clusterId != null ? colorMap.get(page.clusterId as number) : undefined;
         return {
-          id: p.id as number,
-          name: p.title,
-          val: Math.min(18, 4 + Math.log2(1 + p.wordCount / 250)),
-          color: clr ?? '#4a4a62',
-          clustered: clr != null,
-          page: p,
+          id: page.id as number,
+          name: page.title,
+          val: Math.min(18, 4 + Math.log2(1 + page.wordCount / 250)),
+          color: clusterColor ?? '#4a4a62',
+          clustered: clusterColor != null,
+          page,
         };
       });
 
-    const nodeIds = new Set(nodes.map((n) => n.id));
+    const nodeIds = new Set(nodes.map((node) => node.id));
     const links: GLink[] = connections
-      .filter((c) => nodeIds.has(c.sourceId) && nodeIds.has(c.targetId))
-      .map((c) => ({ source: c.sourceId, target: c.targetId, similarity: c.similarity }));
+      .filter((connection) => nodeIds.has(connection.sourceId) && nodeIds.has(connection.targetId))
+      .map((connection) => ({
+        source: connection.sourceId,
+        target: connection.targetId,
+        similarity: connection.similarity,
+      }));
 
     return { nodes, links };
   }, [pages, clusters, connections]);
 
-  // Auto-fit when the graph first populates or node count changes
   useEffect(() => {
     if (data.nodes.length === 0) return;
-    const t = setTimeout(() => fgRef.current?.zoomToFit(600, 60), 900);
-    return () => clearTimeout(t);
+
+    const timeoutId = setTimeout(() => fgRef.current?.zoomToFit(600, 60), 900);
+    return () => clearTimeout(timeoutId);
   }, [data.nodes.length]);
 
   const drawNode = useCallback(
-    (node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const n = node as GNode;
-      const x = n.x ?? 0;
-      const y = n.y ?? 0;
-      const r = n.val;
-      const isHovered = n.id === hoveredId;
-      const isSelected = selected != null && n.id === selected.id;
+    (node: unknown, context: CanvasRenderingContext2D, globalScale: number) => {
+      const graphNode = node as GNode;
+      const x = graphNode.x ?? 0;
+      const y = graphNode.y ?? 0;
+      const radius = graphNode.val;
+      const isHovered = graphNode.id === hoveredId;
+      const isSelected = selected != null && graphNode.id === selected.id;
 
-      // Glow for clustered / hovered nodes
-      if (n.clustered || isHovered) {
-        ctx.shadowColor = n.color;
-        ctx.shadowBlur = isHovered ? 22 : 10;
+      if (graphNode.clustered || isHovered) {
+        context.shadowColor = graphNode.color;
+        context.shadowBlur = isHovered ? 22 : 10;
       }
 
-      // Main circle
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, 2 * Math.PI);
-      ctx.fillStyle = n.color;
-      ctx.fill();
-      ctx.shadowBlur = 0;
+      context.beginPath();
+      context.arc(x, y, radius, 0, 2 * Math.PI);
+      context.fillStyle = graphNode.color;
+      context.fill();
+      context.shadowBlur = 0;
 
-      // Selection ring
       if (isSelected) {
-        ctx.beginPath();
-        ctx.arc(x, y, r + 4 / globalScale, 0, 2 * Math.PI);
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-        ctx.lineWidth = 1.5 / globalScale;
-        ctx.stroke();
+        context.beginPath();
+        context.arc(x, y, radius + 4 / globalScale, 0, 2 * Math.PI);
+        context.strokeStyle = 'rgba(255,255,255,0.6)';
+        context.lineWidth = 1.5 / globalScale;
+        context.stroke();
       }
 
-      // Label: always when hovered, or when zoomed in past 1.4×
       if (isHovered || globalScale > 1.4) {
-        const label = n.name.length > 32 ? n.name.slice(0, 32) + '…' : n.name;
+        const label =
+          graphNode.name.length > 32 ? graphNode.name.slice(0, 32) + '...' : graphNode.name;
         const fontSize = Math.max(7, Math.min(11, 9 / globalScale));
-        ctx.font = `${fontSize}px Inter, system-ui, sans-serif`;
-        ctx.fillStyle = isHovered ? '#ffffff' : 'rgba(200,200,220,0.85)';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        ctx.fillText(label, x, y + r + 3 / globalScale);
+        context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+        context.fillStyle = isHovered ? '#ffffff' : 'rgba(200,200,220,0.85)';
+        context.textAlign = 'center';
+        context.textBaseline = 'top';
+        context.fillText(label, x, y + radius + 3 / globalScale);
       }
     },
     [hoveredId, selected]
@@ -131,21 +129,19 @@ export default function KnowledgeGraph({ pages, clusters, connections }: Props) 
 
   return (
     <div className="card p-5 animate-slide-up">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold">Knowledge Graph</h2>
         <div className="flex items-center gap-3">
           <span className="text-xs text-synapse-muted">
-            {data.nodes.length} nodes · {data.links.length} edges
+            {data.nodes.length} nodes - {data.links.length} edges
           </span>
-          {/* Zoom controls */}
           <div className="flex items-center gap-0.5 p-1 bg-synapse-elevated border border-synapse-border rounded-lg">
             <button
               onClick={() => fgRef.current?.zoom(currentZoom / 1.4, 250)}
               className="w-7 h-7 flex items-center justify-center text-synapse-muted hover:text-synapse-text rounded text-base leading-none"
               title="Zoom out"
             >
-              −
+              -
             </button>
             <button
               onClick={() => fgRef.current?.zoomToFit(400, 60)}
@@ -165,7 +161,6 @@ export default function KnowledgeGraph({ pages, clusters, connections }: Props) 
         </div>
       </div>
 
-      {/* Canvas */}
       <div
         ref={wrapRef}
         className="relative rounded-xl overflow-hidden border border-synapse-border bg-synapse-bg"
@@ -179,7 +174,7 @@ export default function KnowledgeGraph({ pages, clusters, connections }: Props) 
           nodeRelSize={4}
           backgroundColor="#0a0a0f"
           linkColor={() => 'rgba(124,92,255,0.22)'}
-          linkWidth={(l: GLink) => 0.8 + l.similarity * 2.5}
+          linkWidth={(link: GLink) => 0.8 + link.similarity * 2.5}
           nodeCanvasObject={drawNode}
           onNodeClick={(node) => setSelected((node as GNode).page)}
           onNodeHover={(node) => setHoveredId(node ? (node as GNode).id : null)}
@@ -189,32 +184,27 @@ export default function KnowledgeGraph({ pages, clusters, connections }: Props) 
           d3VelocityDecay={0.25}
         />
 
-        {/* Hint overlay */}
         <div className="absolute top-3 left-3 text-xs text-synapse-muted/50 pointer-events-none select-none">
-          scroll to zoom · drag to pan · click node to inspect
+          scroll to zoom - drag to pan - click node to inspect
         </div>
 
-        {/* Cluster legend */}
         {clusters.length > 0 && (
           <div className="absolute bottom-4 left-4 flex flex-col gap-2 pointer-events-none">
-            {clusters.map((c) => (
-              <div key={c.id} className="flex items-center gap-2 text-xs">
+            {clusters.map((cluster) => (
+              <div key={cluster.id} className="flex items-center gap-2 text-xs">
                 <div
                   className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                  style={{ background: c.color, boxShadow: `0 0 8px ${c.color}` }}
+                  style={{ background: cluster.color, boxShadow: `0 0 8px ${cluster.color}` }}
                 />
                 <span className="text-synapse-muted bg-black/50 px-1.5 py-0.5 rounded">
-                  {c.label}
+                  {cluster.label}
                 </span>
               </div>
             ))}
           </div>
         )}
 
-        {/* Selected node detail panel */}
-        {selected && (
-          <NodeDetail page={selected} onClose={() => setSelected(null)} />
-        )}
+        {selected && <NodeDetail page={selected} onClose={() => setSelected(null)} />}
       </div>
     </div>
   );
@@ -234,12 +224,12 @@ function NodeDetail({ page, onClose }: { page: CapturedPage; onClose: () => void
           onClick={onClose}
           className="text-synapse-muted hover:text-synapse-text flex-shrink-0 text-sm"
         >
-          ✕
+          x
         </button>
       </div>
 
       <div className="text-xs text-synapse-muted mt-1.5">
-        {page.domain} · {formatRelative(page.capturedAt)} · {page.wordCount.toLocaleString()} words
+        {page.domain} - {formatRelative(page.capturedAt)} - {page.wordCount.toLocaleString()} words
       </div>
 
       <p className="text-sm text-synapse-muted mt-3 leading-relaxed">
@@ -248,8 +238,10 @@ function NodeDetail({ page, onClose }: { page: CapturedPage; onClose: () => void
 
       {page.keywords.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-3">
-          {page.keywords.slice(0, 6).map((k) => (
-            <span key={k} className="chip">{k}</span>
+          {page.keywords.slice(0, 6).map((keyword) => (
+            <span key={keyword} className="chip">
+              {keyword}
+            </span>
           ))}
         </div>
       )}
@@ -260,7 +252,7 @@ function NodeDetail({ page, onClose }: { page: CapturedPage; onClose: () => void
         rel="noreferrer"
         className="btn-primary mt-4 w-full justify-center text-sm"
       >
-        Open page ↗
+        Open page -&gt;
       </a>
     </div>
   );
